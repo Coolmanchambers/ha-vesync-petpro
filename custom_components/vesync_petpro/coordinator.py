@@ -108,6 +108,10 @@ class PetProCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any] | None]])
             _LOGGER.debug("VeSync token changed; saving it")
             self.hass.config_entries.async_update_entry(entry, data={**entry.data, **creds})
 
+    def pending_fields(self, cid: str) -> list[str]:
+        """Status fields of one purifier still waiting for the purifier to confirm a command."""
+        return sorted(field for (pcid, field) in self._pending if pcid == cid)
+
     def pending(self) -> dict[str, Any]:
         now = time.monotonic()
         return {

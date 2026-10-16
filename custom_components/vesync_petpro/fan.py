@@ -70,6 +70,11 @@ class PetProFan(PetProEntity, FanEntity):
         return 0 if level == FAN_LEVEL_OFF else None
 
     @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        # Lets dashboards show "waiting on the purifier" while a command is unconfirmed.
+        return {"pending": self.coordinator.pending_fields(self._cid)}
+
+    @property
     def preset_mode(self) -> str | None:
         status = self.status
         mode = status.get("workMode") if status else None

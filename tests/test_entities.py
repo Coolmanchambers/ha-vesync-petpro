@@ -253,3 +253,16 @@ async def test_token_rejected_at_setup_is_auth_failure(hass: HomeAssistant, hub_
     assert not await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.SETUP_ERROR
+
+
+async def test_fan_exposes_pending_commands(hass: HomeAssistant, hub_state, make_entry):
+    entry = await setup(hass, make_entry)
+    fan_id = f"fan.{BEDROOM}"
+    assert state(hass, fan_id).attributes["pending"] == []
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": f"switch.{BEDROOM}_child_lock"}, blocking=True
+    )
+    assert state(hass, fan_id).attributes["pending"] == ["childLockSwitch"]
+    hub_state.status["cid-bedroom"]["childLockSwitch"] = 1
+    await refresh(hass, entry)
+    assert state(hass, fan_id).attributes["pending"] == []
