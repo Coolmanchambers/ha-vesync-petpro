@@ -1,15 +1,32 @@
 # VeSync Vital Pet Pro for Home Assistant
 
-Unofficial custom integration for the **Levoit Vital Pet Pro** air purifier (LAP-P501S-WUSR /
-LAP-P501S-AUSR). Home Assistant's built-in VeSync integration doesn't support this model yet
-(see [pyvesync PR #532](https://github.com/webdjoe/pyvesync/pull/532)). This fills the gap until
-it does.
+> [!WARNING]
+> **In development. Use at your own risk.** This is an unofficial, personal project. It is not
+> affiliated with or supported by Home Assistant, Levoit, VeSync or the pyvesync maintainers.
+> It talks to VeSync's cloud with your account credentials and has been tested on a small
+> number of units only. It comes with no warranty (see [LICENSE](LICENSE)). Things may break,
+> change or stop working without notice, including if VeSync changes its API.
+
+> [!IMPORTANT]
+> **Only the Levoit Vital Pet Pro (LAP-P501S-WUSR / LAP-P501S-AUSR) is supported.** Every other
+> VeSync device on your account is ignored, including other Levoit purifiers (Core, Vital
+> 100S/200S, even the plain Vital Pet), humidifiers, fans, outlets and Cosori appliances. For
+> those, use the official integration.
+
+> [!TIP]
+> **Looking for the official integration?** Use Home Assistant's built-in
+> [VeSync integration](https://www.home-assistant.io/integrations/vesync/) (source:
+> [home-assistant/core](https://github.com/home-assistant/core/tree/dev/homeassistant/components/vesync)),
+> built on [pyvesync](https://github.com/webdjoe/pyvesync). Vital Pet Pro support for it is
+> proposed in [pyvesync PR #532](https://github.com/webdjoe/pyvesync/pull/532). Once that ships
+> in a Home Assistant release, remove this integration and use the official one.
+
+Unofficial custom integration for the **Levoit Vital Pet Pro** air purifier. Home Assistant's
+built-in VeSync integration doesn't support this model yet, and this fills the gap until it
+does.
 
 It runs **beside** the built-in VeSync integration and doesn't change it. Your other VeSync
-devices stay where they are, and this integration only picks up Vital Pet Pro units.
-
-> Temporary by design. When Home Assistant's VeSync integration supports the Vital Pet Pro,
-> remove this integration and add the purifiers there.
+devices stay with the official integration.
 
 ## Install (HACS)
 

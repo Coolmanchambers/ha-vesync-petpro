@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "VeSync Vital Pet Pro",
-        "description": "Log in with your VeSync account. Only Vital Pet Pro purifiers are added; your other VeSync devices stay with the built-in VeSync integration.",
+        "description": "**Unofficial and in development. Use at your own risk.** Only Levoit Vital Pet Pro (LAP-P501S) purifiers are added; every other VeSync device is ignored and should stay on the official VeSync integration. Log in with your VeSync account.",
         "data": {
           "email": "Email",
           "password": "Password",
@@ -24,7 +24,7 @@
     "error": {
       "invalid_auth": "Invalid email or password.",
       "cannot_connect": "Could not reach VeSync. Try again in a few minutes.",
-      "no_devices": "No Vital Pet Pro purifier was found on this account.",
+      "no_devices": "No Vital Pet Pro (LAP-P501S) was found on this account. This integration supports only that model; use the official VeSync integration for other devices.",
       "unknown": "Unexpected error. Check the Home Assistant log."
     },
     "abort": {
