@@ -1,0 +1,17 @@
+{
+  "traceId": "TRACE_ID",
+  "code": 0,
+  "msg": null,
+  "result": {
+    "accountID": "sample_id",
+    "avatarIcon": "",
+    "nickName": "",
+    "mailConfirmation": true,
+    "registerSourceDetail": null,
+    "verifyEmail": "EMAIL",
+    "bizToken": null,
+    "mfaMethodList": null,
+    "authorizeCode": "AUTHORIZATION_CODE",
+    "userType": "1"
+  }
+}

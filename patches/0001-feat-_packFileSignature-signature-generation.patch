@@ -1,0 +1,76 @@
+From 29cf0f4a4c896e305db53884a2697d75de9ad0ea Mon Sep 17 00:00:00 2001
+From: rocord01 <57117549+rocord01@users.noreply.github.com>
+Date: Fri, 17 Jul 2026 19:40:10 -0400
+Subject: [PATCH 1/7] feat: _packFileSignature signature generation
+
+---
+ src/pyvesync/utils/helpers.py | 21 +++++++++++++++++++++
+ src/pyvesync/vesync.py        | 13 ++++++++++++-
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/src/pyvesync/utils/helpers.py b/src/pyvesync/utils/helpers.py
+index 8994851..0ff48a1 100644
+--- a/src/pyvesync/utils/helpers.py
++++ b/src/pyvesync/utils/helpers.py
+@@ -124,6 +124,27 @@ class Converters:
+         return celsius * 9.0 / 5.0 + 32
+ 
+ 
++VESYNC_CERT_SHA1 = '2CA4647FA8C5C9475B13FBD47984E525F38AD3B8'
++
++
++def generate_pack_file_signature(trace_id: str) -> str:
++    """Generate the _packFileSignature header value for VeSync API requests.
++
++    The VeSync backend validates this signature using the standard AOSP test key
++    certificate SHA-1 hash rather than Etekcity's production certificate. This
++    allows us to compute the signature cleanly in Python.
++
++    Args:
++        trace_id: The traceId value from the request body.
++
++    Returns:
++        The formatted signature string, e.g. ``v0001-<sha256 hex>``.
++    """
++    raw = str(trace_id) + VESYNC_CERT_SHA1
++    h = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:64].lower()
++    return f'v0001-{h}'
++
++
+ class Helpers:
+     """VeSync Helper Functions."""
+ 
+diff --git a/src/pyvesync/vesync.py b/src/pyvesync/vesync.py
+index 63ffc43..8adfca8 100644
+--- a/src/pyvesync/vesync.py
++++ b/src/pyvesync/vesync.py
+@@ -40,7 +40,10 @@ from pyvesync.utils.errors import (
+     VeSyncTokenError,
+     raise_api_errors,
+ )
+-from pyvesync.utils.helpers import Helpers
++from pyvesync.utils.helpers import (
++    Helpers,
++    generate_pack_file_signature,
++)
+ from pyvesync.utils.logs import LibraryLogger
+ 
+ if TYPE_CHECKING:
+@@ -482,6 +485,14 @@ class VeSync:  # pylint: disable=function-redefined
+             req_dict = json_object
+         else:
+             req_dict = None
++        # Inject _packFileSignature and _signOsInfo headers when a traceId is present
++        if isinstance(req_dict, dict):
++            trace_id = req_dict.get('traceId')
++            if trace_id is None and 'payload' in req_dict:
++                trace_id = req_dict['payload'].get('traceId')
++            if headers is not None and trace_id is not None:
++                headers['_packFileSignature'] = generate_pack_file_signature(trace_id)
++                headers['_signOsInfo'] = 'Android'
+         try:
+             async with self.session.request(
+                 method,
+-- 
+2.54.0.windows.1
+

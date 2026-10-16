@@ -1,0 +1,19 @@
+{
+  "domain": "vesync_petpro",
+  "name": "VeSync Vital Pet Pro",
+  "codeowners": [
+    "@Coolmanchambers"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/Coolmanchambers/ha-vesync-petpro",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/Coolmanchambers/ha-vesync-petpro/issues",
+  "loggers": [
+    "custom_components.vesync_petpro"
+  ],
+  "requirements": [
+    "mashumaro>=3.13.1"
+  ],
+  "version": "0.1.0"
+}

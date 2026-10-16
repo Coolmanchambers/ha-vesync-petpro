@@ -1,0 +1,54 @@
+From 2bc1ac8dc0f153652ad1700e02c0479c56fc6f65 Mon Sep 17 00:00:00 2001
+From: Coolmanchambers <coolmanchambers@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 20:09:54 -0700
+Subject: [PATCH 7/7] test(ha-vendor): check the retry signature against the
+ retry traceId
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ src/tests/test_vendor_ha.py | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/src/tests/test_vendor_ha.py b/src/tests/test_vendor_ha.py
+index bd907ed..9342f74 100644
+--- a/src/tests/test_vendor_ha.py
++++ b/src/tests/test_vendor_ha.py
+@@ -1,6 +1,7 @@
+ """Behaviour required when this library runs next to Home Assistant's own vesync integration."""
+ 
+ import asyncio
++import hashlib
+ import json
+ import platform
+ import uuid
+@@ -13,6 +14,7 @@ from pyvesync.device_map import get_device_config
+ from pyvesync.devices.vesyncpurifier import VeSyncAirBaseV2
+ from pyvesync.models.vesync_models import ResponseDeviceDetailsModel
+ from pyvesync.utils.errors import VeSyncTokenError
++from pyvesync.utils.helpers import VESYNC_CERT_SHA1
+ 
+ from test_petpro import DEVICE_LIST_ITEM
+ 
+@@ -96,14 +98,17 @@ def test_retry_keeps_signature_headers():
+         orig = manager.session.request
+ 
+         def spy(method, url, json=None, headers=None, raise_for_status=False):
+-            seen.append(dict(headers or {}))
++            seen.append((dict(json or {}), dict(headers or {})))
+             return orig(method, url, json=json, headers=headers, raise_for_status=raise_for_status)
+ 
+         manager.session.request = spy
+         with patch.object(type(manager.auth), 'reauthenticate', AsyncMock(side_effect=fake_reauth)):
+             await device.call_bypassv2_api('setChildLock', {'childLockSwitch': 1})
+         assert len(seen) == 2
+-        assert all(h.get('_packFileSignature', '').startswith('v0001-') for h in seen)
++        for body, headers in seen:
++            expected = hashlib.sha256((body['traceId'] + VESYNC_CERT_SHA1).encode()).hexdigest()
++            assert headers['_packFileSignature'] == f'v0001-{expected}'
++        assert seen[1][0]['token'] == 'TOKEN_TWO'
+ 
+     asyncio.run(run())
+ 
+-- 
+2.54.0.windows.1
+

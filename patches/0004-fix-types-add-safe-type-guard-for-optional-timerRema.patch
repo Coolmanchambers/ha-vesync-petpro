@@ -1,0 +1,26 @@
+From 70504e0ce8158732837d25886516e46e64674f12 Mon Sep 17 00:00:00 2001
+From: rocord01 <57117549+rocord01@users.noreply.github.com>
+Date: Fri, 17 Jul 2026 20:09:28 -0400
+Subject: [PATCH 4/7] fix(types): add safe type guard for optional timerRemain
+ field
+
+---
+ src/pyvesync/devices/vesyncpurifier.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/pyvesync/devices/vesyncpurifier.py b/src/pyvesync/devices/vesyncpurifier.py
+index 91879a3..bf56d04 100644
+--- a/src/pyvesync/devices/vesyncpurifier.py
++++ b/src/pyvesync/devices/vesyncpurifier.py
+@@ -498,7 +498,7 @@ class VeSyncAirBaseV2(VeSyncAirBypass):
+         self.state.fan_rotate_angle = details.fanRotateAngle
+         if details.filterOpenState is not None:
+             self.state.filter_open_state = bool(details.filterOpenState)
+-        if details.timerRemain > 0:
++        if details.timerRemain is not None and details.timerRemain > 0:
+             self.state.timer = Timer(details.timerRemain, 'off')
+ 
+     @property
+-- 
+2.54.0.windows.1
+

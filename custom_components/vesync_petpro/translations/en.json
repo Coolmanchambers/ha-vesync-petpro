@@ -1,0 +1,45 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "VeSync Vital Pet Pro",
+        "description": "Log in with your VeSync account. Only Vital Pet Pro purifiers are added; your other VeSync devices stay with the built-in VeSync integration.",
+        "data": {
+          "email": "Email",
+          "password": "Password",
+          "allow_control": "Enable controls (power, speed, mode, child lock, display)"
+        },
+        "data_description": {
+          "allow_control": "Turn off for read-only sensors. Commands can take a few minutes to reach the purifier."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-enter your VeSync password",
+        "description": "VeSync rejected the saved login for {email}.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password.",
+      "cannot_connect": "Could not reach VeSync. Try again in a few minutes.",
+      "no_devices": "No Vital Pet Pro purifier was found on this account.",
+      "unknown": "Unexpected error. Check the Home Assistant log."
+    },
+    "abort": {
+      "already_configured": "This VeSync account is already set up.",
+      "reauth_successful": "Login updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Vital Pet Pro options",
+        "data": {
+          "allow_control": "Enable controls (power, speed, mode, child lock, display)"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+Vendored copy of pyvesync (MIT, see LICENSE in this folder) for vesync_petpro.
+Do not edit here: apply patches/*.patch to webdjoe/pyvesync dev 58eee3b, then run
+tools/vendor_pyvesync.py.
+source: pyvesync PR #532 + Pet Pro/HA fixes, branch vendor-ha, commit 2bc1ac8dc0f153652ad1700e02c0479c56fc6f65

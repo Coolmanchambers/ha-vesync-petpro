@@ -1,0 +1,108 @@
+From 5e5272ef61cd6f09f21912f3d048aa2dc2a010bd Mon Sep 17 00:00:00 2001
+From: rocord01 <57117549+rocord01@users.noreply.github.com>
+Date: Fri, 17 Jul 2026 19:42:58 -0400
+Subject: [PATCH 2/7] feat: add support for Levoit Vital Pet Pro
+ (LAP-P501S-WUSR & LAP-P501S-AUSR)
+
+---
+ src/pyvesync/device_map.py             |  2 ++
+ src/pyvesync/devices/vesyncpurifier.py | 21 +++++++++++++++++----
+ src/pyvesync/models/purifier_models.py | 14 +++++++-------
+ 3 files changed, 26 insertions(+), 11 deletions(-)
+
+diff --git a/src/pyvesync/device_map.py b/src/pyvesync/device_map.py
+index 172b04c..2a0072b 100644
+--- a/src/pyvesync/device_map.py
++++ b/src/pyvesync/device_map.py
+@@ -947,6 +947,8 @@ purifier_modules: list[PurifierMap] = [
+             'LAP-V201-AUSR',
+             'LAP-V201S-AUSR',
+             'LAP-V201S-AEUR',
++            'LAP-P501S-WUSR',
++            'LAP-P501S-AUSR',
+         ],
+         modes=[
+             PurifierModes.SLEEP,
+diff --git a/src/pyvesync/devices/vesyncpurifier.py b/src/pyvesync/devices/vesyncpurifier.py
+index ba3ba80..680e689 100644
+--- a/src/pyvesync/devices/vesyncpurifier.py
++++ b/src/pyvesync/devices/vesyncpurifier.py
+@@ -451,6 +451,17 @@ class VeSyncAirBaseV2(VeSyncAirBypass):
+         """Initialize the VeSync Base API V2 Air Purifier Class."""
+         super().__init__(details, manager, feature_map)
+ 
++    @property
++    def fan_max_level(self) -> int:
++        """Return the maximum fan speed level for this device.
++
++        The Levoit Vital Pet Pro (LAP-P501S*) has only 3 fan speeds
++        (1–3) compared to the standard Vital 200S which has 4 (1–4).
++        """
++        if 'P501S' in self.device_type:
++            return 3
++        return 4
++
+     def _set_state(self, details: InnerPurifierBaseResult) -> None:
+         """Set Purifier state from details response."""
+         if not isinstance(details, PurifierVitalDetailsResult):
+@@ -675,19 +686,21 @@ class VeSyncAirBaseV2(VeSyncAirBypass):
+         return True
+ 
+     async def set_fan_speed(self, speed: None | int = None) -> bool:
++        max_level = self.fan_max_level
++        allowed_levels = list(range(1, max_level + 1))
+         if speed is not None:
+-            if speed not in self.fan_levels:
++            if speed not in allowed_levels:
+                 _LOGGER.warning(
+                     '%s is invalid speed - valid speeds are %s',
+                     speed,
+-                    str(self.fan_levels),
++                    str(allowed_levels),
+                 )
+                 return False
+             new_speed = speed
+         elif self.state.fan_level is None:
+-            new_speed = self.fan_levels[0]
++            new_speed = allowed_levels[0]
+         else:
+-            new_speed = Helpers.bump_level(self.state.fan_level, self.fan_levels)
++            new_speed = Helpers.bump_level(self.state.fan_level, allowed_levels)
+ 
+         payload_data = {'levelIdx': 0, 'manualSpeedLevel': new_speed, 'levelType': 'wind'}
+         r_dict = await self.call_bypassv2_api('setLevel', payload_data)
+diff --git a/src/pyvesync/models/purifier_models.py b/src/pyvesync/models/purifier_models.py
+index d510ef3..80ac5cd 100644
+--- a/src/pyvesync/models/purifier_models.py
++++ b/src/pyvesync/models/purifier_models.py
+@@ -38,7 +38,7 @@ class InnerPurifierBaseResult(BypassV2InnerResult):
+ 
+ @dataclass
+ class PurifierVitalDetailsResult(InnerPurifierBaseResult):
+-    """Vital 100S/200S and Everest Purifier Result Model."""
++    """Vital 100S/200S, Everest, and Vital Pet Pro Purifier Result Model."""
+ 
+     powerSwitch: int
+     filterLifePercent: int
+@@ -50,12 +50,12 @@ class PurifierVitalDetailsResult(InnerPurifierBaseResult):
+     screenState: int
+     childLockSwitch: int
+     screenSwitch: int
+-    lightDetectionSwitch: int
+-    environmentLightState: int
+-    scheduleCount: int
+-    timerRemain: int
+-    efficientModeTimeRemain: int
+-    errorCode: int
++    scheduleCount: int | None = None
++    timerRemain: int | None = None
++    errorCode: int | None = None
++    lightDetectionSwitch: int | None = None
++    environmentLightState: int | None = None
++    efficientModeTimeRemain: int | None = None
+     autoPreference: V2AutoPreferences | None = None
+     fanRotateAngle: int | None = None
+     filterOpenState: int | None = None
+-- 
+2.54.0.windows.1
+

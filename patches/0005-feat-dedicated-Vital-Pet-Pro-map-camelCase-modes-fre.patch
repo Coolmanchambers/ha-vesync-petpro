@@ -1,0 +1,778 @@
+From 017286f06c92b1a4c6cd4b10dd42d85bbee84490 Mon Sep 17 00:00:00 2001
+From: Coolmanchambers <coolmanchambers@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 19:30:04 -0700
+Subject: [PATCH 5/7] feat: dedicated Vital Pet Pro map, camelCase modes, fresh
+ traceId/token per request
+
+- Add LAP-P501S-WUSR/AUSR as their own PurifierMap (fan 1-3, sleep/manual/
+  odorShield modes) instead of the Vital 200S entry; drop fan_max_level.
+- Add odorShield modes to PurifierModes; match set_mode case-insensitively
+  so camelCase device modes are accepted, sending the map's spelling.
+- Parse VOC, odorLevel, filterRemainDay, buzzerSwitch (optional fields).
+- get_defaultvalues_attributes returns a fresh dict with a new traceId per
+  call; get_manager_attributes is no longer cached, so request bodies pick
+  up a new token after re-login.
+- Tests: real Pet Pro status fixture, signature vs official app captures
+  (#477), token/traceId freshness regression tests.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ src/pyvesync/const.py                       |   6 +
+ src/pyvesync/device_map.py                  |  19 +-
+ src/pyvesync/devices/vesyncpurifier.py      |  29 +--
+ src/pyvesync/models/purifier_models.py      |   4 +
+ src/pyvesync/utils/helpers.py               |  26 +-
+ src/tests/api/vesyncpurifier/LAP-P501S.yaml | 248 ++++++++++++++++++++
+ src/tests/call_json_purifiers.py            |  34 +++
+ src/tests/test_petpro.py                    | 207 ++++++++++++++++
+ src/tests/test_purifiers.py                 |   1 +
+ 9 files changed, 547 insertions(+), 27 deletions(-)
+ create mode 100644 src/tests/api/vesyncpurifier/LAP-P501S.yaml
+ create mode 100644 src/tests/test_petpro.py
+
+diff --git a/src/pyvesync/const.py b/src/pyvesync/const.py
+index eb6e02f..4d8b9c3 100644
+--- a/src/pyvesync/const.py
++++ b/src/pyvesync/const.py
+@@ -630,6 +630,9 @@ class PurifierModes(Features):
+         SLEEP: Sleep mode.
+         TURBO: Turbo mode.
+         PET: Pet mode.
++        ODOR_SHIELD_QUIET: OdorShield quiet mode (Vital Pet Pro).
++        ODOR_SHIELD_BALANCED: OdorShield balanced mode (Vital Pet Pro).
++        ODOR_SHIELD_PERFORMANCE: OdorShield performance mode (Vital Pet Pro).
+         UNKNOWN: Unknown mode.
+     """
+ 
+@@ -638,6 +641,9 @@ class PurifierModes(Features):
+     SLEEP = 'sleep'
+     TURBO = 'turbo'
+     PET = 'pet'
++    ODOR_SHIELD_QUIET = 'odorShieldQuiet'
++    ODOR_SHIELD_BALANCED = 'odorShieldBalanced'
++    ODOR_SHIELD_PERFORMANCE = 'odorShieldPerformance'
+     UNKNOWN = 'unknown'
+ 
+ 
+diff --git a/src/pyvesync/device_map.py b/src/pyvesync/device_map.py
+index 2a0072b..6b7857c 100644
+--- a/src/pyvesync/device_map.py
++++ b/src/pyvesync/device_map.py
+@@ -947,8 +947,6 @@ purifier_modules: list[PurifierMap] = [
+             'LAP-V201-AUSR',
+             'LAP-V201S-AUSR',
+             'LAP-V201S-AEUR',
+-            'LAP-P501S-WUSR',
+-            'LAP-P501S-AUSR',
+         ],
+         modes=[
+             PurifierModes.SLEEP,
+@@ -968,6 +966,23 @@ purifier_modules: list[PurifierMap] = [
+         model_name='Vital 200S',
+         setup_entry='LAP-V201S',
+     ),
++    PurifierMap(
++        class_name='VeSyncAirBaseV2',
++        dev_types=['LAP-P501S-WUSR', 'LAP-P501S-AUSR'],
++        modes=[
++            PurifierModes.SLEEP,
++            PurifierModes.MANUAL,
++            PurifierModes.ODOR_SHIELD_QUIET,
++            PurifierModes.ODOR_SHIELD_BALANCED,
++            PurifierModes.ODOR_SHIELD_PERFORMANCE,
++        ],
++        features=[PurifierFeatures.AIR_QUALITY],
++        fan_levels=list(range(1, 4)),
++        device_alias='Vital Pet Pro',
++        model_display='LAP-P501S Series',
++        model_name='Vital Pet Pro',
++        setup_entry='LAP-P501S',
++    ),
+     PurifierMap(
+         class_name='VeSyncAirBaseV2',
+         dev_types=[
+diff --git a/src/pyvesync/devices/vesyncpurifier.py b/src/pyvesync/devices/vesyncpurifier.py
+index bf56d04..504f6fa 100644
+--- a/src/pyvesync/devices/vesyncpurifier.py
++++ b/src/pyvesync/devices/vesyncpurifier.py
+@@ -451,17 +451,6 @@ class VeSyncAirBaseV2(VeSyncAirBypass):
+         """Initialize the VeSync Base API V2 Air Purifier Class."""
+         super().__init__(details, manager, feature_map)
+ 
+-    @property
+-    def fan_max_level(self) -> int:
+-        """Return the maximum fan speed level for this device.
+-
+-        The Levoit Vital Pet Pro (LAP-P501S*) has only 3 fan speeds
+-        (1-3) compared to the standard Vital 200S which has 4 (1-4).
+-        """
+-        if 'P501S' in self.device_type:
+-            return 3
+-        return 4
+-
+     def _set_state(self, details: InnerPurifierBaseResult) -> None:
+         """Set Purifier state from details response."""
+         if not isinstance(details, PurifierVitalDetailsResult):
+@@ -495,6 +484,8 @@ class VeSyncAirBaseV2(VeSyncAirBypass):
+         self.state.pm1 = details.PM1
+         self.state.pm10 = details.PM10
+         self.state.aq_percent = details.AQPercent
++        if details.VOC is not None:
++            self.state.voc = details.VOC
+         self.state.fan_rotate_angle = details.fanRotateAngle
+         if details.filterOpenState is not None:
+             self.state.filter_open_state = bool(details.filterOpenState)
+@@ -686,21 +677,19 @@ class VeSyncAirBaseV2(VeSyncAirBypass):
+         return True
+ 
+     async def set_fan_speed(self, speed: None | int = None) -> bool:
+-        max_level = self.fan_max_level
+-        allowed_levels = list(range(1, max_level + 1))
+         if speed is not None:
+-            if speed not in allowed_levels:
++            if speed not in self.fan_levels:
+                 _LOGGER.warning(
+                     '%s is invalid speed - valid speeds are %s',
+                     speed,
+-                    str(allowed_levels),
++                    str(self.fan_levels),
+                 )
+                 return False
+             new_speed = speed
+         elif self.state.fan_level is None:
+-            new_speed = allowed_levels[0]
++            new_speed = self.fan_levels[0]
+         else:
+-            new_speed = Helpers.bump_level(self.state.fan_level, allowed_levels)
++            new_speed = Helpers.bump_level(self.state.fan_level, self.fan_levels)
+ 
+         payload_data = {'levelIdx': 0, 'manualSpeedLevel': new_speed, 'levelType': 'wind'}
+         r_dict = await self.call_bypassv2_api('setLevel', payload_data)
+@@ -716,9 +705,13 @@ class VeSyncAirBaseV2(VeSyncAirBypass):
+         return True
+ 
+     async def set_mode(self, mode: str) -> bool:
+-        if mode.lower() not in self.modes:
++        # Device modes may be camelCase (e.g. odorShieldBalanced), so match
++        # case-insensitively and send the spelling from the device map.
++        canonical = next((m for m in self.modes if m.lower() == mode.lower()), None)
++        if canonical is None:
+             _LOGGER.warning('Invalid purifier mode used - %s', mode)
+             return False
++        mode = str(canonical)
+ 
+         # Call change_fan_speed if mode is set to manual
+         if mode == PurifierModes.MANUAL:
+diff --git a/src/pyvesync/models/purifier_models.py b/src/pyvesync/models/purifier_models.py
+index 80ac5cd..beb114f 100644
+--- a/src/pyvesync/models/purifier_models.py
++++ b/src/pyvesync/models/purifier_models.py
+@@ -62,6 +62,10 @@ class PurifierVitalDetailsResult(InnerPurifierBaseResult):
+     PM1: int | None = None
+     PM10: int | None = None
+     AQPercent: int | None = None
++    VOC: int | None = None
++    odorLevel: int | None = None
++    filterRemainDay: int | None = None
++    buzzerSwitch: int | None = None
+ 
+ 
+ @dataclass
+diff --git a/src/pyvesync/utils/helpers.py b/src/pyvesync/utils/helpers.py
+index 0ff48a1..a2df2ed 100644
+--- a/src/pyvesync/utils/helpers.py
++++ b/src/pyvesync/utils/helpers.py
+@@ -259,7 +259,9 @@ class Helpers:
+         return r_dict
+ 
+     @staticmethod
+-    def get_class_attributes(target_class: object, keys: tuple[str]) -> dict[str, Any]:
++    def get_class_attributes(
++        target_class: object, keys: tuple[str, ...]
++    ) -> dict[str, Any]:
+         """Find matching attributes, static methods, and class methods from list of keys.
+ 
+         This function is case insensitive and will remove underscores from the keys before
+@@ -315,10 +317,16 @@ class Helpers:
+ 
+     @classmethod
+     @lru_cache(maxsize=128, typed=True)
+-    def get_defaultvalues_attributes(cls, keys: tuple[str]) -> dict[str, Any]:
++    def _cached_defaultvalues_attributes(cls, keys: tuple[str, ...]) -> dict[str, Any]:
++        return cls.get_class_attributes(DefaultValues, keys)
++
++    @classmethod
++    def get_defaultvalues_attributes(cls, keys: tuple[str, ...]) -> dict[str, Any]:
+         """Get default values for dataclass attributes.
+ 
+-        This method uses lru_cache to cache results for faster subsequent lookups.
++        The attribute lookup is cached, but a new dictionary is returned on every
++        call so callers cannot mutate the cache, and `traceId` is regenerated so
++        each request carries its own trace ID.
+ 
+         Args:
+             keys (list[str]): List of attribute names to get default values for.
+@@ -326,14 +334,18 @@ class Helpers:
+         Returns:
+             dict[str, Any]: Dictionary of attribute names and their default values.
+         """
+-        return cls.get_class_attributes(DefaultValues, keys)
++        result = dict(cls._cached_defaultvalues_attributes(keys))
++        if 'traceId' in result:
++            result['traceId'] = DefaultValues.traceId()
++        return result
+ 
+     @classmethod
+-    @lru_cache(maxsize=128, typed=True)
+-    def get_manager_attributes(cls, manager: VeSync, keys: tuple[str]) -> dict[str, Any]:
++    def get_manager_attributes(
++        cls, manager: VeSync, keys: tuple[str, ...]
++    ) -> dict[str, Any]:
+         """Get VeSync manager attributes.
+ 
+-        This method uses lru_cache to cache results for faster subsequent lookups.
++        Not cached: the token and account ID change when the manager logs in again.
+ 
+         Args:
+             manager (VeSyncManager): Instance of VeSyncManager.
+diff --git a/src/tests/api/vesyncpurifier/LAP-P501S.yaml b/src/tests/api/vesyncpurifier/LAP-P501S.yaml
+new file mode 100644
+index 0000000..bb2e5e1
+--- /dev/null
++++ b/src/tests/api/vesyncpurifier/LAP-P501S.yaml
+@@ -0,0 +1,248 @@
++set_fan_speed:
++  headers:
++    Content-Type: application/json; charset=UTF-8
++    User-Agent: okhttp/3.12.1
++  json_object:
++    acceptLanguage: en
++    accountID: sample_id
++    appVersion: 5.6.60
++    cid: LAP-P501S-CID
++    configModel: ConfigModule
++    configModule: ConfigModule
++    debugMode: false
++    deviceId: LAP-P501S-CID
++    method: bypassV2
++    payload:
++      data:
++        levelIdx: 0
++        levelType: wind
++        manualSpeedLevel: 3
++      method: setLevel
++      source: APP
++    phoneBrand: pyvesync
++    phoneOS: Android
++    timeZone: America/New_York
++    token: sample_tk
++    traceId: TRACE_ID
++    userCountryCode: US
++  method: post
++  url: /cloud/v2/deviceManaged/bypassV2
++set_manual_mode:
++  headers:
++    Content-Type: application/json; charset=UTF-8
++    User-Agent: okhttp/3.12.1
++  json_object:
++    acceptLanguage: en
++    accountID: sample_id
++    appVersion: 5.6.60
++    cid: LAP-P501S-CID
++    configModel: ConfigModule
++    configModule: ConfigModule
++    debugMode: false
++    deviceId: LAP-P501S-CID
++    method: bypassV2
++    payload:
++      data:
++        levelIdx: 0
++        levelType: wind
++        manualSpeedLevel: 1
++      method: setLevel
++      source: APP
++    phoneBrand: pyvesync
++    phoneOS: Android
++    timeZone: America/New_York
++    token: sample_tk
++    traceId: TRACE_ID
++    userCountryCode: US
++  method: post
++  url: /cloud/v2/deviceManaged/bypassV2
++set_mode:
++  headers:
++    Content-Type: application/json; charset=UTF-8
++    User-Agent: okhttp/3.12.1
++  json_object:
++    acceptLanguage: en
++    accountID: sample_id
++    appVersion: 5.6.60
++    cid: LAP-P501S-CID
++    configModel: ConfigModule
++    configModule: ConfigModule
++    debugMode: false
++    deviceId: LAP-P501S-CID
++    method: bypassV2
++    payload:
++      data:
++        workMode: odorShieldBalanced
++      method: setPurifierMode
++      source: APP
++    phoneBrand: pyvesync
++    phoneOS: Android
++    timeZone: America/New_York
++    token: sample_tk
++    traceId: TRACE_ID
++    userCountryCode: US
++  method: post
++  url: /cloud/v2/deviceManaged/bypassV2
++set_sleep_mode:
++  headers:
++    Content-Type: application/json; charset=UTF-8
++    User-Agent: okhttp/3.12.1
++  json_object:
++    acceptLanguage: en
++    accountID: sample_id
++    appVersion: 5.6.60
++    cid: LAP-P501S-CID
++    configModel: ConfigModule
++    configModule: ConfigModule
++    debugMode: false
++    deviceId: LAP-P501S-CID
++    method: bypassV2
++    payload:
++      data:
++        workMode: sleep
++      method: setPurifierMode
++      source: APP
++    phoneBrand: pyvesync
++    phoneOS: Android
++    timeZone: America/New_York
++    token: sample_tk
++    traceId: TRACE_ID
++    userCountryCode: US
++  method: post
++  url: /cloud/v2/deviceManaged/bypassV2
++turn_off:
++  headers:
++    Content-Type: application/json; charset=UTF-8
++    User-Agent: okhttp/3.12.1
++  json_object:
++    acceptLanguage: en
++    accountID: sample_id
++    appVersion: 5.6.60
++    cid: LAP-P501S-CID
++    configModel: ConfigModule
++    configModule: ConfigModule
++    debugMode: false
++    deviceId: LAP-P501S-CID
++    method: bypassV2
++    payload:
++      data:
++        powerSwitch: 0
++        switchIdx: 0
++      method: setSwitch
++      source: APP
++    phoneBrand: pyvesync
++    phoneOS: Android
++    timeZone: America/New_York
++    token: sample_tk
++    traceId: TRACE_ID
++    userCountryCode: US
++  method: post
++  url: /cloud/v2/deviceManaged/bypassV2
++turn_off_display:
++  headers:
++    Content-Type: application/json; charset=UTF-8
++    User-Agent: okhttp/3.12.1
++  json_object:
++    acceptLanguage: en
++    accountID: sample_id
++    appVersion: 5.6.60
++    cid: LAP-P501S-CID
++    configModel: ConfigModule
++    configModule: ConfigModule
++    debugMode: false
++    deviceId: LAP-P501S-CID
++    method: bypassV2
++    payload:
++      data:
++        screenSwitch: 0
++      method: setDisplay
++      source: APP
++    phoneBrand: pyvesync
++    phoneOS: Android
++    timeZone: America/New_York
++    token: sample_tk
++    traceId: TRACE_ID
++    userCountryCode: US
++  method: post
++  url: /cloud/v2/deviceManaged/bypassV2
++turn_on:
++  headers:
++    Content-Type: application/json; charset=UTF-8
++    User-Agent: okhttp/3.12.1
++  json_object:
++    acceptLanguage: en
++    accountID: sample_id
++    appVersion: 5.6.60
++    cid: LAP-P501S-CID
++    configModel: ConfigModule
++    configModule: ConfigModule
++    debugMode: false
++    deviceId: LAP-P501S-CID
++    method: bypassV2
++    payload:
++      data:
++        powerSwitch: 1
++        switchIdx: 0
++      method: setSwitch
++      source: APP
++    phoneBrand: pyvesync
++    phoneOS: Android
++    timeZone: America/New_York
++    token: sample_tk
++    traceId: TRACE_ID
++    userCountryCode: US
++  method: post
++  url: /cloud/v2/deviceManaged/bypassV2
++turn_on_display:
++  headers:
++    Content-Type: application/json; charset=UTF-8
++    User-Agent: okhttp/3.12.1
++  json_object:
++    acceptLanguage: en
++    accountID: sample_id
++    appVersion: 5.6.60
++    cid: LAP-P501S-CID
++    configModel: ConfigModule
++    configModule: ConfigModule
++    debugMode: false
++    deviceId: LAP-P501S-CID
++    method: bypassV2
++    payload:
++      data:
++        screenSwitch: 1
++      method: setDisplay
++      source: APP
++    phoneBrand: pyvesync
++    phoneOS: Android
++    timeZone: America/New_York
++    token: sample_tk
++    traceId: TRACE_ID
++    userCountryCode: US
++  method: post
++  url: /cloud/v2/deviceManaged/bypassV2
++update:
++  headers:
++    Content-Type: application/json; charset=UTF-8
++    User-Agent: okhttp/3.12.1
++  json_object:
++    acceptLanguage: en
++    accountID: sample_id
++    appVersion: 5.6.60
++    cid: LAP-P501S-CID
++    configModel: ConfigModule
++    configModule: ConfigModule
++    debugMode: false
++    deviceId: LAP-P501S-CID
++    method: bypassV2
++    payload:
++      data: {}
++      method: getPurifierStatus
++      source: APP
++    phoneBrand: pyvesync
++    phoneOS: Android
++    timeZone: America/New_York
++    token: sample_tk
++    traceId: TRACE_ID
++    userCountryCode: US
++  method: post
++  url: /cloud/v2/deviceManaged/bypassV2
+diff --git a/src/tests/call_json_purifiers.py b/src/tests/call_json_purifiers.py
+index 79b02dc..b4d9c35 100644
+--- a/src/tests/call_json_purifiers.py
++++ b/src/tests/call_json_purifiers.py
+@@ -198,6 +198,38 @@ PURIFIER_DETAILS: dict[str, dict[str, Any]] = {
+         "efficientModeTimeRemain": 0,
+         "errorCode": 0,
+     },
++    "LAP-P501S": {  # Vital Pet Pro (field set captured from a real LAP-P501S-WUSR)
++        "powerSwitch": int(DeviceStatus.ON),
++        "filterLifePercent": PurifierDefaults.filter_life,
++        "workMode": PurifierDefaults.purifier_mode,
++        "manualSpeedLevel": PurifierDefaults.fan_set_level,
++        "fanSpeedLevel": PurifierDefaults.fan_level,
++        "AQLevel": PurifierDefaults.air_quality_enum.value,
++        "PM25": PurifierDefaults.air_quality_value_pm25,
++        "screenState": PurifierDefaults.display,
++        "childLockSwitch": PurifierDefaults.child_lock,
++        "screenSwitch": PurifierDefaults.display_config,
++        "scheduleCount": 0,
++        "timerRemain": 0,
++        "VOC": 430,
++        "errorCode": 0,
++        "buzzerSwitch": 0,
++        "odorLevel": 4,
++        "filterOpenState": 0,
++        "cumulativeCleanAir": 20460,
++        "filterRemainDay": 167,
++        "resetFilterDate": 0,
++        "totalCleanAir": 20499,
++        "errorCodes": [],
++        "screenPreference": {"screenOnType": 1, "screenStartTime": 28800, "screenEndTime": 79200},
++        "childLockPreference": {"childLockAutoSwitch": 0, "childLockAutoSwitchTime": 60},
++        "autoCleanPreference": {
++            "autoCleanState": 0,
++            "autoCleanRemainTime": 0,
++            "previousCleanTime": 0,
++            "autoCleanTotalTime": 0,
++        },
++    },
+     "LAP-V201S": {  # Vital 200S
+         "powerSwitch": int(DeviceStatus.ON),
+         "filterLifePercent": PurifierDefaults.filter_life,
+@@ -316,6 +348,7 @@ DETAILS_RESPONSES = {
+     "Core600S": build_bypass_v2_response(inner_result=PURIFIER_DETAILS["Core600S"]),
+     "LAP-V102S": build_bypass_v2_response(inner_result=PURIFIER_DETAILS["LAP-V102S"]),
+     "LAP-V201S": build_bypass_v2_response(inner_result=PURIFIER_DETAILS["LAP-V201S"]),
++    "LAP-P501S": build_bypass_v2_response(inner_result=PURIFIER_DETAILS["LAP-P501S"]),
+     "EL551S": build_bypass_v2_response(inner_result=PURIFIER_DETAILS["EL551S"]),
+     "LAP-B851S-WUS": build_bypass_v2_response(inner_result=PURIFIER_DETAILS["LAP-B851S-WUS"]),
+ }
+@@ -339,6 +372,7 @@ METHOD_RESPONSES = {
+     "Core600S": deepcopy(FunctionResponsesV2),
+     "LAP-V102S": deepcopy(FunctionResponsesV2),
+     "LAP-V201S": deepcopy(FunctionResponsesV2),
++    "LAP-P501S": deepcopy(FunctionResponsesV2),
+     "EL551S": deepcopy(FunctionResponsesV2),
+     "LAP-B851S-WUS": deepcopy(FunctionResponsesV2),
+ }
+diff --git a/src/tests/test_petpro.py b/src/tests/test_petpro.py
+new file mode 100644
+index 0000000..fe9ef9b
+--- /dev/null
++++ b/src/tests/test_petpro.py
+@@ -0,0 +1,207 @@
++"""Levoit Vital Pet Pro (LAP-P501S) and bypassV2 request-freshness tests."""
++
++import asyncio
++import hashlib
++from unittest.mock import AsyncMock, MagicMock, patch
++
++import pytest
++
++from pyvesync import VeSync
++from pyvesync.const import PurifierModes
++from pyvesync.device_map import get_device_config
++from pyvesync.devices.vesyncpurifier import VeSyncAirBaseV2
++from pyvesync.models.purifier_models import PurifierVitalDetailsResult
++from pyvesync.models.vesync_models import ResponseDeviceDetailsModel
++from pyvesync.utils.helpers import VESYNC_CERT_SHA1, Helpers, generate_pack_file_signature
++
++# getPurifierStatus result captured from a real LAP-P501S-WUSR (2026-10-15).
++PET_PRO_STATUS = {
++    'powerSwitch': 1,
++    'filterLifePercent': 93,
++    'workMode': 'odorShieldPerformance',
++    'manualSpeedLevel': 1,
++    'childLockSwitch': 0,
++    'screenSwitch': 1,
++    'fanSpeedLevel': 3,
++    'screenState': 1,
++    'scheduleCount': 2,
++    'timerRemain': 0,
++    'VOC': 430,
++    'errorCode': 0,
++    'buzzerSwitch': 0,
++    'odorLevel': 4,
++    'filterOpenState': 0,
++    'cumulativeCleanAir': 20460,
++    'PM25': 1,
++    'AQLevel': 4,
++    'filterRemainDay': 167,
++    'resetFilterDate': 0,
++    'totalCleanAir': 20499,
++    'errorCodes': [],
++    'screenPreference': {'screenOnType': 1, 'screenStartTime': 28800, 'screenEndTime': 79200},
++    'childLockPreference': {'childLockAutoSwitch': 0, 'childLockAutoSwitchTime': 60},
++    'autoCleanPreference': {
++        'autoCleanState': 0,
++        'autoCleanRemainTime': 0,
++        'previousCleanTime': 0,
++        'autoCleanTotalTime': 0,
++    },
++}
++
++DEVICE_LIST_ITEM = {
++    'deviceType': 'LAP-P501S-WUSR',
++    'isOwner': True,
++    'deviceName': 'Vital Pet Pro',
++    'deviceImg': '',
++    'cid': 'CID',
++    'uuid': 'UUID',
++    'macID': 'MACID',
++    'connectionType': 'wifi',
++    'type': 'wifi-air',
++    'configModule': 'VS_WFON_APR_LAP-P501S-AUSR_US',
++    'mode': None,
++    'speed': None,
++    'connectionStatus': 'online',
++    'deviceStatus': 'on',
++    'deviceRegion': 'US',
++    'currentFirmVersion': None,
++    'subDeviceNo': None,
++}
++
++
++def make_manager() -> VeSync:
++    manager = VeSync('user@example.com', 'password')
++    manager.set_credentials('TOKEN_ONE', 'ACCOUNT', 'US', 'US')
++    return manager
++
++
++def make_pet_pro(manager: VeSync) -> VeSyncAirBaseV2:
++    details = ResponseDeviceDetailsModel.from_dict(DEVICE_LIST_ITEM)
++    return VeSyncAirBaseV2(details, manager, get_device_config('LAP-P501S-WUSR'))
++
++
++class TestPetProDeviceMap:
++    @pytest.mark.parametrize('dev_type', ['LAP-P501S-WUSR', 'LAP-P501S-AUSR'])
++    def test_dedicated_map_entry(self, dev_type):
++        cfg = get_device_config(dev_type)
++        assert cfg is not None
++        assert cfg.model_name == 'Vital Pet Pro'
++        assert cfg.class_name == 'VeSyncAirBaseV2'
++        assert cfg.fan_levels == [1, 2, 3]
++        assert PurifierModes.ODOR_SHIELD_PERFORMANCE in cfg.modes
++        assert PurifierModes.AUTO not in cfg.modes
++        assert PurifierModes.PET not in cfg.modes
++
++    def test_vital_200s_unchanged(self):
++        cfg = get_device_config('LAP-V201S-WUS')
++        assert cfg.model_name == 'Vital 200S'
++        assert cfg.fan_levels == [1, 2, 3, 4]
++        assert 'LAP-P501S-WUSR' not in cfg.dev_types
++
++    def test_no_model_specific_max_level_property(self):
++        assert not hasattr(VeSyncAirBaseV2, 'fan_max_level')
++
++
++class TestPetProState:
++    def test_real_status_parses(self):
++        device = make_pet_pro(make_manager())
++        device._set_state(PurifierVitalDetailsResult.from_dict(PET_PRO_STATUS))
++        assert device.state.mode == 'odorShieldPerformance'
++        assert device.state.fan_level == 3
++        assert device.state.fan_set_level == 1
++        assert device.state.filter_life == 93
++        assert device.state.pm25 == 1
++        assert device.state.voc == 430
++        assert device.state.child_lock is False
++        assert device.state.filter_open_state is False
++
++    def test_fan_levels_follow_device_map(self):
++        async def run():
++            device = make_pet_pro(make_manager())
++            ok = {'code': 0, 'result': {'code': 0, 'result': {}}}
++            with patch.object(VeSyncAirBaseV2, 'call_bypassv2_api', AsyncMock(return_value=ok)) as call:
++                assert await device.set_fan_speed(4) is False
++                call.assert_not_called()
++                assert await device.set_fan_speed(3) is True
++                assert call.call_args.args[1]['manualSpeedLevel'] == 3
++
++        asyncio.run(run())
++
++    def test_odor_shield_mode_payload(self):
++        async def run():
++            device = make_pet_pro(make_manager())
++            ok = {'code': 0, 'result': {'code': 0, 'result': {}}}
++            with patch.object(VeSyncAirBaseV2, 'call_bypassv2_api', AsyncMock(return_value=ok)) as call:
++                assert await device.set_mode('odorShieldBalanced') is True
++                assert call.call_args.args == ('setPurifierMode', {'workMode': 'odorShieldBalanced'})
++
++
++        asyncio.run(run())
++
++class TestRequestFreshness:
++    """bypassV2 bodies must carry the current token and a per-request traceId."""
++
++    def test_token_follows_new_credentials(self):
++        manager = make_manager()
++        device = make_pet_pro(manager)
++        assert device._build_request('getPurifierStatus').token == 'TOKEN_ONE'
++        manager.set_credentials('TOKEN_TWO', 'ACCOUNT', 'US', 'US')
++        assert device._build_request('getPurifierStatus').token == 'TOKEN_TWO'
++
++    def test_trace_id_is_per_request(self):
++        device = make_pet_pro(make_manager())
++        with patch('pyvesync.models.base_models.time', side_effect=[1000.0, 1001.0]):
++            first = device._build_request('getPurifierStatus').traceId
++            second = device._build_request('getPurifierStatus').traceId
++        assert first != second
++
++    def test_default_values_not_mutated_by_callers(self):
++        keys = ('traceId', 'appVersion')
++        first = Helpers.get_defaultvalues_attributes(keys)
++        first['appVersion'] = 'MUTATED'
++        assert Helpers.get_defaultvalues_attributes(keys)['appVersion'] != 'MUTATED'
++
++
++class TestPackFileSignature:
++    # Captured from the official VeSync Android app 5.6.60 (pyvesync issue #477).
++    @pytest.mark.parametrize(
++        ('trace_id', 'expected'),
++        [
++            ('1765251913564', 'ae2f6d63d00ae9f5d4b866dd472b54d1c66d98fe159801adb494785d84f3bb2e'),
++            ('1765251914109', 'a2af15ba8943e8edf16d1680eed70f57d19ba0026d6a9233ea76e25e3c310c70'),
++        ],
++    )
++    def test_matches_app_captures(self, trace_id, expected):
++        assert generate_pack_file_signature(trace_id) == f'v0001-{expected}'
++
++    def test_header_signs_body_trace_id(self):
++        async def run():
++            manager = make_manager()
++            device = make_pet_pro(manager)
++            sent = {}
++
++            class FakeResponse:
++                status = 200
++
++                async def read(self):
++                    return b'{"code": 0, "msg": "ok", "result": {"code": 0, "result": {}}}'
++
++                async def __aenter__(self):
++                    return self
++
++                async def __aexit__(self, *args):
++                    return False
++
++            def fake_request(method, url, json, headers, raise_for_status):
++                sent['json'], sent['headers'] = json, headers
++                return FakeResponse()
++
++            manager.session = MagicMock()
++            manager.session.request = fake_request
++            await device.call_bypassv2_api('setChildLock', {'childLockSwitch': 1})
++            trace_id = sent['json']['traceId']
++            expected = hashlib.sha256((trace_id + VESYNC_CERT_SHA1).encode()).hexdigest()
++            assert sent['headers']['_packFileSignature'] == f'v0001-{expected}'
++            assert sent['headers']['_signOsInfo'] == 'Android'
++
++        asyncio.run(run())
+diff --git a/src/tests/test_purifiers.py b/src/tests/test_purifiers.py
+index edbd4eb..5a8b7cd 100644
+--- a/src/tests/test_purifiers.py
++++ b/src/tests/test_purifiers.py
+@@ -106,6 +106,7 @@ class TestAirPurifiers(TestBase):
+         "LV-RH131S": [["set_auto_mode"], ['set_sleep_mode'], ["turn_on_display"], ["turn_off_display"]],
+         "LAP-V102S": [["set_auto_mode"], ['set_sleep_mode'], ['set_pet_mode'], ["turn_on_display"], ["turn_off_display"]],
+         "LAP-V201S": [["set_auto_mode"], ['set_sleep_mode'], ['set_pet_mode'], ["turn_on_display"], ["turn_off_display"]],
++        "LAP-P501S": [['set_mode', {'mode': 'odorShieldBalanced'}], ["turn_on_display"], ["turn_off_display"]],
+         "EL551S": [["set_auto_mode"], ["set_sleep_mode"], ["set_turbo_mode"], ["turn_on_display"], ["turn_off_display"]],
+         "LAP-B851S-WUS": [["set_auto_mode"], ['set_sleep_mode'], ["turn_on_display"], ["turn_off_display"]],
+ 
+-- 
+2.54.0.windows.1
+

@@ -1,0 +1,69 @@
+{
+  "code": 0,
+  "traceId": "TRACE_ID",
+  "msg": "Success",
+  "result": {
+    "pageNo": 1,
+    "pageSize": 100,
+    "total": 3,
+    "list": [
+      {
+        "extension": null,
+        "isOwner": true,
+        "authKey": null,
+        "deviceStatus": "on",
+        "connectionStatus": "online",
+        "connectionType": "wifi",
+        "mode": null,
+        "speed": null,
+        "deviceProps": null,
+        "configModule": "VS_WFON_APR_LAP-P501S-AUSR_US",
+        "deviceRegion": "US",
+        "deviceName": "Bedroom - Vital Pet Pro",
+        "type": null,
+        "cid": "cid-bedroom",
+        "uuid": "uuid-bedroom",
+        "macID": "mac-bedroom",
+        "deviceType": "LAP-P501S-WUSR"
+      },
+      {
+        "extension": null,
+        "isOwner": true,
+        "authKey": null,
+        "deviceStatus": "on",
+        "connectionStatus": "online",
+        "connectionType": "wifi",
+        "mode": null,
+        "speed": null,
+        "deviceProps": null,
+        "configModule": "WiFiBTOnboardingNotify_AirPurifier_Core200S_US",
+        "deviceRegion": "US",
+        "deviceName": "Core 200S Series",
+        "type": null,
+        "cid": "cid-core",
+        "uuid": "uuid-bedroom",
+        "macID": "mac-bedroom",
+        "deviceType": "Core200S"
+      },
+      {
+        "extension": null,
+        "isOwner": true,
+        "authKey": null,
+        "deviceStatus": "on",
+        "connectionStatus": "online",
+        "connectionType": "wifi",
+        "mode": null,
+        "speed": null,
+        "deviceProps": null,
+        "configModule": "VS_WFON_APR_LAP-P501S-AUSR_US",
+        "deviceRegion": "US",
+        "deviceName": "Office - Vital Pet Pro",
+        "type": null,
+        "cid": "cid-office",
+        "uuid": "uuid-office",
+        "macID": "mac-office",
+        "deviceType": "LAP-P501S-WUSR"
+      }
+    ]
+  }
+}

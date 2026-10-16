@@ -1,0 +1,343 @@
+From c36a2af91cb0d4da199c7faa1a298d4bd0629029 Mon Sep 17 00:00:00 2001
+From: Coolmanchambers <coolmanchambers@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 19:35:54 -0700
+Subject: [PATCH 6/7] fix(ha-vendor): bounded token retry and a distinct
+ terminal ID
+
+For running alongside Home Assistant's own vesync integration:
+- On a rejected token, log in (at most once per 300 s) and retry the request
+  once with the new token, account ID and a fresh traceId in the body and the
+  original headers. Never recurse (webdjoe/pyvesync#558).
+- Salt TERMINAL_ID so this copy never shares a terminal ID with stock pyvesync
+  on the same host.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ src/pyvesync/const.py       |   7 +-
+ src/pyvesync/vesync.py      |  69 ++++++++++++++++----
+ src/tests/test_vendor_ha.py | 126 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 187 insertions(+), 15 deletions(-)
+ create mode 100644 src/tests/test_vendor_ha.py
+
+diff --git a/src/pyvesync/const.py b/src/pyvesync/const.py
+index 4d8b9c3..b373bfc 100644
+--- a/src/pyvesync/const.py
++++ b/src/pyvesync/const.py
+@@ -60,8 +60,13 @@ MOBILE_ID = str(randint(1000000000000000, 9999999999999999))  # noqa: S311
+ USER_TYPE = '1'
+ BYPASS_APP_V = f'VeSync {APP_VERSION}'
+ BYPASS_HEADER_UA = 'okhttp/3.12.1'
++# Salted so this copy never shares a terminal ID with Home Assistant's own vesync
++# integration on the same host; one login per terminal can invalidate the other.
+ TERMINAL_ID = '2' + (
+-    uuid.uuid5(uuid.NAMESPACE_DNS, f'{uuid.getnode():x}-{platform.node() or ""}').hex
++    uuid.uuid5(
++        uuid.NAMESPACE_DNS,
++        f'{uuid.getnode():x}-{platform.node() or ""}-vesync_petpro',
++    ).hex
+ )
+ 
+ CLIENT_TYPE = 'vesyncApp'
+diff --git a/src/pyvesync/vesync.py b/src/pyvesync/vesync.py
+index 8adfca8..4125947 100644
+--- a/src/pyvesync/vesync.py
++++ b/src/pyvesync/vesync.py
+@@ -4,6 +4,7 @@ from __future__ import annotations
+ 
+ import asyncio
+ import logging
++import time
+ from dataclasses import MISSING, fields
+ from pathlib import Path
+ from typing import TYPE_CHECKING, Self
+@@ -16,13 +17,13 @@ from pyvesync.auth import VeSyncAuth
+ from pyvesync.const import (
+     DEFAULT_REGION,
+     DEFAULT_TZ,
+-    MAX_API_REAUTH_RETRIES,
+     REGION_API_MAP,
+     STATUS_OK,
+     ConnectionStatus,
+     ProductTypes,
+ )
+ from pyvesync.device_container import DeviceContainer
++from pyvesync.models.base_models import DefaultValues
+ from pyvesync.models.vesync_models import (
+     FirmwareDeviceItemModel,
+     RequestDeviceListModel,
+@@ -51,6 +52,8 @@ if TYPE_CHECKING:
+ 
+ logger = logging.getLogger(__name__)
+ 
++REAUTH_COOLDOWN = 300
++
+ 
+ class VeSync:  # pylint: disable=function-redefined
+     """VeSync Manager Class."""
+@@ -62,6 +65,7 @@ class VeSync:  # pylint: disable=function-redefined
+         '_close_session',
+         '_debug',
+         '_device_container',
++        '_last_reauth',
+         '_redact',
+         '_verbose',
+         'enabled',
+@@ -140,6 +144,7 @@ class VeSync:  # pylint: disable=function-redefined
+         """
+         self.session = session
+         self._api_attempts = 0
++        self._last_reauth: float | None = None
+         self._close_session = False
+         self.redact = redact
+         self._verbose: bool = False
+@@ -423,20 +428,24 @@ class VeSync:  # pylint: disable=function-redefined
+     async def _reauthenticate(self) -> bool:
+         """Re-authenticate using stored username and password.
+ 
++        At most one attempt per REAUTH_COOLDOWN seconds, so a token that keeps
++        being rejected cannot turn into a login storm and an account lockout.
++
+         Returns:
+             True if re-authentication successful, False otherwise
+         """
++        now = time.monotonic()
++        if self._last_reauth is not None and now - self._last_reauth < REAUTH_COOLDOWN:
++            logger.warning(
++                'Token rejected again within %s s of the last login; skipping login',
++                REAUTH_COOLDOWN,
++            )
++            return False
++        self._last_reauth = now
+         self.enabled = False
+-        self._api_attempts += 1
+-        if self._api_attempts >= MAX_API_REAUTH_RETRIES:
+-            logger.error('Max API re-authentication attempts reached')
+-            raise VeSyncTokenError
+         success = await self.auth.reauthenticate()
+-        if success:
+-            self.enabled = True
+-            self._api_attempts = 0
+-            return True
+-        return await self.auth.reauthenticate()
++        self.enabled = bool(success)
++        return bool(success)
+ 
+     async def async_call_api(
+         self,
+@@ -445,6 +454,8 @@ class VeSync:  # pylint: disable=function-redefined
+         json_object: dict | None | DataClassORJSONMixin = None,
+         headers: dict | None = None,
+         device: VeSyncBaseDevice | None = None,
++        *,
++        _is_retry: bool = False,
+     ) -> tuple[dict | None, int]:
+         """Make API calls by passing endpoint, header and body.
+ 
+@@ -516,7 +527,13 @@ class VeSync:  # pylint: disable=function-redefined
+                     request_body=req_dict,
+                 )
+                 resp_dict, status_code = await self._api_response_wrapper(
+-                    resp_bytes, resp_status, api, req_dict, device=device
++                    resp_bytes,
++                    resp_status,
++                    api,
++                    req_dict,
++                    device=device,
++                    headers=headers,
++                    is_retry=_is_retry,
+                 )
+ 
+         except ClientResponseError as e:
+@@ -524,13 +541,16 @@ class VeSync:  # pylint: disable=function-redefined
+             raise
+         return resp_dict, status_code
+ 
+-    async def _api_response_wrapper(
++    async def _api_response_wrapper(  # noqa: PLR0913
+         self,
+         response_bytes: bytes | None,
+         status_code: int,
+         endpoint: str,
+         request_body: dict | None,
+         device: VeSyncBaseDevice | None = None,
++        headers: dict | None = None,
++        *,
++        is_retry: bool = False,
+     ) -> tuple[dict | None, int]:
+         """Internal wrapper used by async_call_api."""
+         resp_dict = LibraryLogger.try_json_loads(response_bytes)
+@@ -539,16 +559,37 @@ class VeSync:  # pylint: disable=function-redefined
+ 
+         error_info = Helpers.parse_error_code(resp_dict)
+         if error_info.error_type == ErrorTypes.TOKEN_ERROR:
++            # Retry at most once, with the new token written into the body (the
++            # original body still carries the rejected token) and the original
++            # headers. Never recurse: a second rejection is raised.
+             self.enabled = False
+-            if await self._reauthenticate():
++            if not is_retry and await self._reauthenticate():
+                 return await self.async_call_api(
+-                    endpoint, 'post', request_body, device=device
++                    endpoint,
++                    'post',
++                    self._with_current_credentials(request_body),
++                    headers=dict(headers) if headers is not None else None,
++                    device=device,
++                    _is_retry=True,
+                 )
+             raise VeSyncTokenError(error_info.message)
+         raise_api_errors(error_info)
+ 
+         return resp_dict, status_code
+ 
++    def _with_current_credentials(self, request_body: dict | None) -> dict | None:
++        """Copy of a request body with the current token, account ID and a new traceId."""
++        if request_body is None:
++            return None
++        body = dict(request_body)
++        if 'token' in body:
++            body['token'] = self.token
++        if 'accountID' in body:
++            body['accountID'] = self.account_id
++        if 'traceId' in body:
++            body['traceId'] = DefaultValues.traceId()
++        return body
++
+     def _api_base_url_for_current_region(self) -> str:
+         """Retrieve the API base url for the current region.
+ 
+diff --git a/src/tests/test_vendor_ha.py b/src/tests/test_vendor_ha.py
+new file mode 100644
+index 0000000..bd907ed
+--- /dev/null
++++ b/src/tests/test_vendor_ha.py
+@@ -0,0 +1,126 @@
++"""Behaviour required when this library runs next to Home Assistant's own vesync integration."""
++
++import asyncio
++import json
++import platform
++import uuid
++from unittest.mock import AsyncMock, patch
++
++import pytest
++
++from pyvesync import VeSync, const
++from pyvesync.device_map import get_device_config
++from pyvesync.devices.vesyncpurifier import VeSyncAirBaseV2
++from pyvesync.models.vesync_models import ResponseDeviceDetailsModel
++from pyvesync.utils.errors import VeSyncTokenError
++
++from test_petpro import DEVICE_LIST_ITEM
++
++TOKEN_EXPIRED = {'code': -11001000, 'msg': 'token expired'}
++OK = {'code': 0, 'msg': 'ok', 'result': {'code': 0, 'result': {'powerSwitch': 1}}}
++
++
++def stock_terminal_id() -> str:
++    """The formula used by upstream pyvesync (and so by HA's vesync integration)."""
++    return '2' + uuid.uuid5(
++        uuid.NAMESPACE_DNS, f'{uuid.getnode():x}-{platform.node() or ""}'
++    ).hex
++
++
++def test_terminal_id_differs_from_stock_but_is_stable():
++    assert const.TERMINAL_ID != stock_terminal_id()
++    assert const.TERMINAL_ID.startswith('2') and len(const.TERMINAL_ID) == 33
++
++
++class FakeSession:
++    """Rejects any request carrying a token other than the current valid one."""
++
++    def __init__(self, manager):
++        self.manager = manager
++        self.valid_token = 'TOKEN_TWO'
++        self.bodies = []
++
++    def request(self, method, url, json=None, headers=None, raise_for_status=False):
++        self.bodies.append(json)
++        body = OK if (json or {}).get('token') == self.valid_token else TOKEN_EXPIRED
++        return FakeResponse(body)
++
++
++class FakeResponse:
++    status = 200
++
++    def __init__(self, body):
++        self._body = json.dumps(body).encode()
++
++    async def read(self):
++        return self._body
++
++    async def __aenter__(self):
++        return self
++
++    async def __aexit__(self, *args):
++        return False
++
++
++def make():
++    manager = VeSync('user@example.com', 'password')
++    manager.set_credentials('TOKEN_ONE', 'ACCOUNT', 'US', 'US')
++    manager.session = FakeSession(manager)
++    details = ResponseDeviceDetailsModel.from_dict(DEVICE_LIST_ITEM)
++    device = VeSyncAirBaseV2(details, manager, get_device_config('LAP-P501S-WUSR'))
++
++    async def fake_reauth():
++        manager.set_credentials('TOKEN_TWO', 'ACCOUNT', 'US', 'US')
++        return True
++
++    return manager, device, fake_reauth
++
++
++def test_rejected_token_retries_once_with_new_token():
++    async def run():
++        manager, device, fake_reauth = make()
++        with patch.object(type(manager.auth), 'reauthenticate', AsyncMock(side_effect=fake_reauth)) as login:
++            resp = await device.call_bypassv2_api('getPurifierStatus')
++            assert resp['code'] == 0
++            assert login.await_count == 1
++            assert [b['token'] for b in manager.session.bodies] == ['TOKEN_ONE', 'TOKEN_TWO']
++            assert manager.session.bodies[0]['traceId'] is not None
++
++    asyncio.run(run())
++
++
++def test_retry_keeps_signature_headers():
++    async def run():
++        manager, device, fake_reauth = make()
++        seen = []
++        orig = manager.session.request
++
++        def spy(method, url, json=None, headers=None, raise_for_status=False):
++            seen.append(dict(headers or {}))
++            return orig(method, url, json=json, headers=headers, raise_for_status=raise_for_status)
++
++        manager.session.request = spy
++        with patch.object(type(manager.auth), 'reauthenticate', AsyncMock(side_effect=fake_reauth)):
++            await device.call_bypassv2_api('setChildLock', {'childLockSwitch': 1})
++        assert len(seen) == 2
++        assert all(h.get('_packFileSignature', '').startswith('v0001-') for h in seen)
++
++    asyncio.run(run())
++
++
++def test_reauth_is_rate_limited():
++    async def run():
++        manager, device, _ = make()
++        manager.session.valid_token = 'NEVER_VALID'
++
++        async def still_bad():
++            manager.set_credentials('TOKEN_TWO', 'ACCOUNT', 'US', 'US')
++            return True
++
++        with patch.object(type(manager.auth), 'reauthenticate', AsyncMock(side_effect=still_bad)) as login:
++            for _ in range(5):
++                with pytest.raises(VeSyncTokenError):
++                    await device.call_bypassv2_api('getPurifierStatus')
++            assert login.await_count == 1
++
++    asyncio.run(run())
+-- 
+2.54.0.windows.1
+
